@@ -1,0 +1,196 @@
+{
+  "name": "AI Inventory Management - Supabase",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "inventory-check",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "1b5f9d6a-7d10-4f31-9b5b-100000000001",
+      "name": "Inventory Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        240,
+        300
+      ],
+      "webhookId": "inventory-check-webhook"
+    },
+    {
+      "parameters": {
+        "url": "={{$env.SUPABASE_URL}}/rest/v1/products",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "select",
+              "value": "id,name,sku,stock_quantity,reorder_level,price"
+            },
+            {
+              "name": "id",
+              "value": "=eq.{{$json.body.productId}}"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "1b5f9d6a-7d10-4f31-9b5b-100000000002",
+      "name": "Get Product Stock",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        460,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const request = $('Inventory Webhook').first().json.body ?? {};\nconst productId = request.productId;\nconst requestedQuantity = Number(request.requestedQuantity);\n\nif (!productId || !Number.isInteger(requestedQuantity) || requestedQuantity <= 0) {\n  throw new Error('Request must include productId and a positive integer requestedQuantity.');\n}\n\nconst resultItems = $('Get Product Stock').all().map(item => item.json);\nlet product = resultItems.length === 1 && Array.isArray(resultItems[0])\n  ? resultItems[0][0]\n  : resultItems[0];\n\nif (!product || !product.id) {\n  throw new Error(`Product not found: ${productId}`);\n}\n\nconst availableStock = Number(product.stock_quantity ?? 0);\nconst reorderLevel = Number(product.reorder_level ?? 0);\nconst shortage = Math.max(0, requestedQuantity - availableStock);\nconst sufficient = shortage === 0;\n\n// If stock is short, recommend enough to cover the shortage and restore\n// the configured reorder buffer.\nconst recommendedReorderQuantity = sufficient\n  ? 0\n  : shortage + reorderLevel;\n\nconst response = {\n  success: true,\n  product: {\n    id: product.id,\n    name: product.name,\n    sku: product.sku\n  },\n  requestedQuantity,\n  availableStock,\n  shortage,\n  stockSufficient: sufficient,\n  recommendation: sufficient\n    ? {\n        action: 'NO_REORDER_REQUIRED',\n        quantity: 0,\n        reason: 'Available stock can satisfy the requested quantity.'\n      }\n    : {\n        action: 'REORDER',\n        quantity: recommendedReorderQuantity,\n        reason: `Short by ${shortage} unit(s). The recommendation also restores the reorder buffer of ${reorderLevel} unit(s).`\n      }\n};\n\nreturn [{\n  json: {\n    response,\n    input_data: { productId, requestedQuantity },\n    output_data: response\n  }\n}];"
+      },
+      "id": "1b5f9d6a-7d10-4f31-9b5b-100000000003",
+      "name": "Compare Stock & Recommend",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        700,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.SUPABASE_URL}}/rest/v1/ai_agent_logs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { agent_name: 'AI Inventory Manager', task_name: 'Inventory availability check', action: 'Stock comparison and reorder recommendation', input_data: $json.input_data, output_data: $json.output_data, status: 'completed' } }}",
+        "options": {}
+      },
+      "id": "1b5f9d6a-7d10-4f31-9b5b-100000000004",
+      "name": "Save Result to Supabase",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        940,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $('Compare Stock & Recommend').first().json.response }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "1b5f9d6a-7d10-4f31-9b5b-100000000005",
+      "name": "Return JSON Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1180,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Inventory Webhook": {
+      "main": [
+        [
+          {
+            "node": "Get Product Stock",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Product Stock": {
+      "main": [
+        [
+          {
+            "node": "Compare Stock & Recommend",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compare Stock & Recommend": {
+      "main": [
+        [
+          {
+            "node": "Save Result to Supabase",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Result to Supabase": {
+      "main": [
+        [
+          {
+            "node": "Return JSON Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "1b5f9d6a-7d10-4f31-9b5b-100000000006",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": []
+}
